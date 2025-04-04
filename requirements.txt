@@ -1,0 +1,3 @@
+requests
+wxPython>=4.0
+chardet
