@@ -20,7 +20,7 @@ try:
 except ImportError:
     HAS_CHARDET = False
 APP_NAME = "Gateway Guardian"
-APP_VERSION = "1.0-alpha1"
+APP_VERSION = "1.0-alpha2"
 API_BASE_URL = "https://api.cloudflare.com/client/v4"
 MAX_DOMAINS_PER_LIST = 1000
 MAX_LISTS = 300
@@ -169,73 +169,54 @@ class CloudflareAPI:
         if not list_ids or not isinstance(list_ids, list): raise ValueError("Invalid list_ids provided.")
         if id_map is None: raise ValueError("ID map cannot be None for rule creation.")
         
-        # ALWAYS start completely fresh with a clean description
-        # We never want to inherit metadata or hash values from an existing description
         base_description = "Managed by Gateway Guardian"
         
-        # Extract base description if provided, ignoring all metadata
         if description and description != base_description and METADATA_MARKER_PREFIX in description:
             start_idx = description.find(METADATA_MARKER_PREFIX)
             if start_idx > 0:
                 base_part = description[:start_idx].rstrip()
                 if base_part:
                     base_description = base_part
-                    print(f"Using base description: {base_description}")
             
-            # Only extract URL and prefix if needed and not already provided
             if not source_url or not list_prefix:
                 end_idx = description.find(METADATA_MARKER_SUFFIX)
                 if end_idx > start_idx:
-                    # Extract metadata
                     metadata_content = description[start_idx+len(METADATA_MARKER_PREFIX):end_idx]
                     
-                    # Extract URL if needed (handle URLs with colons)
                     if not source_url and METADATA_URL_KEY in metadata_content:
                         metadata_parts = metadata_content.split(':')
                         for i, part in enumerate(metadata_parts):
                             if part.startswith(METADATA_URL_KEY):
-                                # Special handling for URLs
                                 url_value = part[len(METADATA_URL_KEY):]
-                                # If the next part doesn't have a key, it's part of the URL (has a colon)
                                 j = i + 1
                                 while j < len(metadata_parts) and not any(metadata_parts[j].startswith(key) for key in [METADATA_PREFIX_KEY, METADATA_HASH_KEY]):
                                     url_value += ":" + metadata_parts[j]
                                     j += 1
                                 source_url = url_value
-                                print(f"Extracted URL: {source_url}")
                                 break
                     
-                    # Extract prefix if needed
                     if not list_prefix and METADATA_PREFIX_KEY in metadata_content:
                         for part in metadata_content.split(':'):
                             if part.startswith(METADATA_PREFIX_KEY):
                                 list_prefix = part[len(METADATA_PREFIX_KEY):]
-                                print(f"Extracted prefix: {list_prefix}")
                                 break
         
-        # Create completely new metadata from scratch - NEVER reuse any old metadata
         final_description = base_description
         if source_url and list_prefix:
-            # Start with a completely fresh metadata structure
             metadata_parts = [f"{METADATA_URL_KEY}{source_url}", f"{METADATA_PREFIX_KEY}{list_prefix}"]
             
-            # Only add hash if provided
             if content_hash:
                 metadata_parts.append(f"{METADATA_HASH_KEY}{content_hash}")
-                print(f"Adding new hash: {content_hash}")
             
-            # Create completely new metadata
             metadata = f"{METADATA_MARKER_PREFIX}{':'.join(metadata_parts)}{METADATA_MARKER_SUFFIX}"
-            print(f"Created fresh metadata: {metadata}")
             
             max_desc_len, max_metadata_len = 500, len(metadata)
             allowed_desc_len = max_desc_len - max_metadata_len - 1
             if allowed_desc_len < 0:
-                print(f"Warning: Metadata for rule '{name}' is too long, not embedding.")
+                pass 
             else:
-                # Always add space between description and metadata
                 final_description = base_description + " " + metadata
-                print(f"Final description: {final_description}")
+        
         expression_ids, missing_ids_in_map = [], []
         for list_id in list_ids:
             expression_id = id_map.get(list_id)
@@ -865,7 +846,7 @@ class MainFrame(wx.Frame):
             
             # Logo
             try:
-                response = requests.get("https://raw.githubusercontent.com/john-holt4/Gateway-Gaurdian/main/logo.png", timeout=10)
+                response = requests.get("https://raw.githubusercontent.com/john-holt4/Gateway-Gaurdian/main/logo/logo.png", timeout=10)
                 response.raise_for_status()
                 image_data = io.BytesIO(response.content)
                 img = wx.Image(image_data)
@@ -1991,67 +1972,127 @@ class MainFrame(wx.Frame):
             wx.CallAfter(self.UpdateStatusBar, "Ready")
     def _process_adblock_content(self, content):
         domains = set()
+        # Basic domain structure validation
         domain_pattern = re.compile(r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$")
-        ip_hosts_pattern = re.compile(r"^(?:0\.0\.0\.0|127\.0\.0\.1)\s+(.*)")
-        dnsmasq_pattern = re.compile(r"^local=/(.+?)/")
-        wildcard_pattern = re.compile(r"^\*\.(.+)$")
-        rpz_pattern = re.compile(r"^(?:\*\.)?([a-zA-Z0-9.-]+)\s+CNAME\s+\.$")
+        
+        # --- Patterns for different list formats ---
+        # /etc/hosts or IP-based blocking
+        ip_hosts_pattern = re.compile(r"^(?:0\.0\.0\.0|127\.0\.0\.1)\s+(.*)") 
+        # Dnsmasq format (e.g., local=/example.com/)
+        dnsmasq_pattern = re.compile(r"^local=/(.+?)/") 
+        # Simple wildcard format (e.g., *.example.com) - Note: Cloudflare Gateway doesn't directly support wildcards in lists, but we extract the base domain.
+        wildcard_pattern = re.compile(r"^\*\.(.+)$") 
+        # RPZ format (e.g., example.com CNAME .)
+        rpz_pattern = re.compile(r"^(?:\*\.)?([a-zA-Z0-9.-]+)\s+CNAME\s+\.$") 
+        
+        # --- Adblock Plus style patterns ---
+        # ORIGINAL: Might not handle options ($third-party) correctly
+        # adblock_patterns = [
+        #     re.compile(r"^\|\|([a-zA-Z0-9.-]+)[\^|/$]?(?:$|\s|,)"), 
+        #     re.compile(r"^([a-zA-Z0-9.-]+)$") # Plain domain list
+        # ]
+        
+        # UPDATED: Specifically targets the ||domain.com^ format and captures the domain
         adblock_patterns = [
-            re.compile(r"^\|\|([a-zA-Z0-9.-]+)[\^|/$]?(?:$|\s|,)"),
+            # Handles ||domain.com^... format, capturing only the domain
+            re.compile(r"^\|\|([a-zA-Z0-9.-]+)\^"), 
+             # Handles lines with just the domain name
             re.compile(r"^([a-zA-Z0-9.-]+)$")
         ]
+
         lines = content.splitlines()
         processed_lines = 0
-        if len(lines) > 100:
-            wx.CallAfter(self.LogMessage, f"Processing {len(lines):,} lines...")
-            wx.CallAfter(self.UpdateStatusBar, f"Processing {len(lines):,} lines...")
-        for line in lines:
-            processed_lines += 1
+        total_lines = len(lines)
+
+        # Log progress for large lists
+        if total_lines > 100:
+            wx.CallAfter(self.LogMessage, f"Processing {total_lines:,} lines...")
+            wx.CallAfter(self.UpdateStatusBar, f"Processing {total_lines:,} lines...")
+
+        for line_num, line in enumerate(lines):
+            # Provide progress update periodically for very large lists
+            if total_lines > 5000 and line_num % 1000 == 0:
+                 wx.YieldIfNeeded() # Allow UI updates
+                 wx.CallAfter(self.UpdateStatusBar, f"Processing line {line_num:,}/{total_lines:,}...")
+
             line = line.strip()
+            # Skip comments, empty lines, exceptions (@@), and common invalid lines
             if not line or line.startswith(('#', '!', '[', '/', ';')) or 'localhost' in line or line.startswith('@@'):
                 continue
+
             potential_domain = None
             matched = False
+
+            # --- Check patterns in order ---
+
+            # 1. IP/Hosts format
             ip_match = ip_hosts_pattern.match(line)
             if ip_match:
-                potential_domains_str = ip_match.group(1).split('#')[0].strip()
+                # Extract potential domains, ignore comments after #
+                potential_domains_str = ip_match.group(1).split('#')[0].strip() 
                 potential_domains = potential_domains_str.split()
                 for p_dom in potential_domains:
                     p_dom = p_dom.strip('.').lower()
+                    # Validate it looks like a domain and not an IP
                     if p_dom and not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", p_dom) and domain_pattern.match(p_dom):
                         domains.add(p_dom)
-                matched = True
-                continue
-            dnsmasq_match = dnsmasq_pattern.match(line)
-            if dnsmasq_match:
-                potential_domain = dnsmasq_match.group(1)
-                matched = True
+                matched = True 
+                continue # Skip other patterns if matched here
+
+            # 2. Dnsmasq format
+            if not matched:
+                dnsmasq_match = dnsmasq_pattern.match(line)
+                if dnsmasq_match:
+                    potential_domain = dnsmasq_match.group(1)
+                    matched = True
+            
+            # 3. Wildcard format (extract base domain)
             if not matched:
                 wildcard_match = wildcard_pattern.match(line)
                 if wildcard_match:
-                    potential_domain = wildcard_match.group(1)
+                    # Cloudflare lists don't use wildcards, so we add the base domain
+                    potential_domain = wildcard_match.group(1) 
                     matched = True
+
+            # 4. RPZ format
             if not matched:
-                rpz_pattern = rpz_pattern.match(line)
+                # NOTE: The previous fix for rpz_match was applied here
+                rpz_match = rpz_pattern.match(line) 
                 if rpz_match:
                     potential_domain = rpz_match.group(1)
                     matched = True
+
+            # 5. Adblock Plus formats (using the UPDATED patterns)
             if not matched:
                 for pattern in adblock_patterns:
                     match = pattern.match(line)
                     if match:
-                        potential_domain = match.group(1).lower().strip('.').split('#')[0].strip().split(';')[0].strip()
+                        # Extract domain from group 1, clean it up
+                        potential_domain = match.group(1).lower().strip('.')
+                        # Handle potential inline comments (though less common in this format)
+                        potential_domain = potential_domain.split('#')[0].strip().split(';')[0].strip() 
                         matched = True
-                        break
+                        break # Stop checking adblock patterns once one matches
+
+            # --- Add valid extracted domain ---
             if potential_domain:
                 potential_domain = potential_domain.lower().strip('.')
+                # Final validation: ensure it looks like a domain and not an IP address
                 if potential_domain and not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", potential_domain) and domain_pattern.match(potential_domain):
                     domains.add(potential_domain)
+            
+            processed_lines += 1
+
+
+        # Log results
         if not domains:
             wx.CallAfter(self.LogMessage, "Warning: No valid domains were extracted from the provided content.", "orange")
             wx.CallAfter(self.UpdateStatusBar, "Warning: No valid domains extracted.")
         else:
-             wx.CallAfter(self.UpdateStatusBar, f"Processed {len(domains):,} domains.")
+             final_count = len(domains)
+             wx.CallAfter(self.LogMessage, f"Successfully extracted {final_count:,} unique domains from {processed_lines:,} processed lines (out of {total_lines:,} total).")
+             wx.CallAfter(self.UpdateStatusBar, f"Processed {final_count:,} domains.")
+             
         return sorted(list(domains))
     def _cleanup_items(self, list_ids_to_delete, rule_ids_to_delete):
         if not list_ids_to_delete and not rule_ids_to_delete: wx.CallAfter(self.LogMessage, "Cleanup: No items specified for cleanup.", "grey"); return
