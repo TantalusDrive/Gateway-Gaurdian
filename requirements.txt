@@ -4,7 +4,7 @@ requests
 # Used for making API calls to Cloudflare and fetching lists from URLs.
 # Consider pinning to a specific version if needed, e.g., requests>=2.25.0
 
-wxPython>=4.0.0
+wxPython
 # The GUI toolkit. Version 4.x is generally recommended.
 # Installation might require specific steps depending on your OS.
 # Check https://wxpython.org/pages/downloads/
