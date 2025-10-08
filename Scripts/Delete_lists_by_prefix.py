@@ -2,6 +2,9 @@
 ##  This script helps clean up orphaned or unused Gateway lists in Cloudflare Zero Trust when manual deletion fails or mass removal is needed.     ##
 ##  It safely deletes lists matching a given prefix only if not referenced in active DNS policies, preventing accidental removal of in-use rules.  ##
 #####################################################################################################################################################
+# Created by TantalusDrive (https://github.com/TantalusDrive) – Feel free to use and share!
+# No official affiliation with Cloudflare or Gateway Gaurdian.
+
 
 import requests
 
