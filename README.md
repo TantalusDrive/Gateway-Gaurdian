@@ -133,6 +133,12 @@ Gateway Guardian connects to the Cloudflare API, parses your adblock list (handl
 
 ---
 
+## 🛠️ Community Tools
+
+* [Bulk Delete Gateway Lists by Prefix](https://github.com/TantalusDrive/Gateway-Gaurdian/blob/main/Scripts/Delete_lists_by_prefix.py) – A script to remove orphaned or leftover Gateway lists when manual cleanup fails or is interrupted. Useful after partially deleted DNS rules.
+
+---
+
 ## 🤝 Contributing
 
 Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/john-holt4/Gateway-Gaurdian/issues).
